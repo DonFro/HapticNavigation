@@ -5,7 +5,6 @@ from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout
 
 # Imported Modules
-import feedbackModule as fb
 import coreVibrationAudioModule as cva
 from uiElementModule import ButtonGroup
 
