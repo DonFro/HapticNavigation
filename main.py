@@ -5,7 +5,6 @@ from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout
 
 # Imported Modules
-import feedbackModule as fb
 import coreVibrationAudioModule as cva
 from uiElementModule import ButtonGroup
 
@@ -29,7 +28,7 @@ class MyApp(App):
         btn.bind(on_release=self.on_button_clicked)
         myButton.add_button(btn)
 
-        myButton.bind(on_button=self.handle_button_feedback)
+        myButton.bind(finger_on_button=self.handle_button_feedback)
 
         rootScreen.add_widget(myButton)
         return rootScreen

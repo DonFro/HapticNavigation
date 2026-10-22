@@ -6,7 +6,7 @@ from kivy.properties import BooleanProperty
 
 
 class ButtonGroup(BoxLayout):
-    on_button = BooleanProperty(False)
+    finger_on_button = BooleanProperty(False)
 
     def __init__(self, **kwargs):
         super().__init__(orientation='vertical', spacing=10, **kwargs)
@@ -28,14 +28,14 @@ class ButtonGroup(BoxLayout):
 
         # check if the finger is within the button bounds
         if self.button and self.button.collide_point(touch.x, touch.y):
-            if not self.on_button:
-                self.on_button = True
+            if not self.finger_on_button:
+                self.finger_on_button = True
                 self.button.state = "down"
             return
 
         # check if the finger is not within the bounds
-        if self.on_button:
-            self.on_button = False
+        if self.finger_on_button:
+            self.finger_on_button = False
             self.button.state = "normal"
 
     def on_touch_down(self, touch: MotionEvent) -> bool:

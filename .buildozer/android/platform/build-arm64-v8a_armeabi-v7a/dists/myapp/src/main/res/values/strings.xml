@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="KivySupportCutout">
+        <item name="android:windowNoTitle">true</item>
+        <!-- Display cutout is an area on some devices that extends into the display surface -->
+        
+    </style>
+    <string name="app_name">Haptic Navigation</string>
+    <string name="private_version">515a13eaccec3013db892d21c5d801c5da3721c6</string>
+    <string name="presplash_color">#000000</string>
+    <string name="urlScheme">kivy</string>
+</resources>
