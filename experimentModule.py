@@ -3,12 +3,15 @@ import os
 import random
 import time
 
-# ---------------- Experiment settings (Can be edited) ----------------
+# ---------------- Experiment settings (edit these) ----------------
 BUTTON_LABELS = ["Purchase", "Add to Cart", "Wishlist", "Back"]
 NUM_LEVELS = 4              # level N shows N buttons
 TRIALS_PER_LEVEL = 4        # how many "find the button" tasks per level
 TRIAL_TIMEOUT_S = 60        # give up on a trial after this many seconds
 PAUSE_BETWEEN_TRIALS_S = 1.5
+# Vibrate on the rating screen even in the "Audio only" condition.
+# Set to False if you want audio-only participants to never feel vibration.
+RATING_SCREEN_VIBRATES = True
 
 # 2x2 grid of slots (center_x, center_y). Buttons are placed in random slots
 # each trial so participants can't memorise positions. Button size stays the

@@ -29,10 +29,9 @@ class CoreVibrationAudioModule:
     engine fails, it falls back to plyer's tts, which you already know works.
     """
 
-    def __init__(self, vibration_duration: float = 0.15):
+    def __init__(self):
         self.vibrator = vibrator
         self.isActive = False
-        self.vibrationStrength = vibration_duration  # seconds
         self.ttsReady = False
         self.engine = None
 
@@ -52,13 +51,19 @@ class CoreVibrationAudioModule:
             print(f"TTS init failed ({status}), using plyer")
 
     def activateVibration(self) -> None:
+        """Vibrate continuously until deactivateVibration() is called"""
         self.isActive = True
         try:
-            self.vibrator.vibrate(self.vibrationStrength)
+            # pattern = [wait, vibrate] in seconds; repeat=0 loops it forever
+            self.vibrator.pattern(pattern=[0, 1], repeat=0)
         except NotImplementedError:
             print("[PC Test] Vibration ON")
         except Exception as e:
-            print(f"Vibration failed: {e}")
+            print(f"Continuous vibration failed, using long pulse: {e}")
+            try:
+                self.vibrator.vibrate(60)  # fallback: 60 s pulse, cancelled on leave
+            except Exception as e2:
+                print(f"Vibration failed: {e2}")
 
     def deactivateVibration(self) -> None:
         self.isActive = False

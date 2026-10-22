@@ -27,6 +27,7 @@ class MyApp(App):
         return self.root_screen
 
     def on_pause(self) -> bool:
+        self.coreVibrationAudio.deactivateVibration()
         return True  # don't lose the session if the screen turns off
 
     # ================= Start / end / rating screens (facilitator) =================
@@ -42,22 +43,45 @@ class MyApp(App):
         self.root_screen.add_widget(box)
 
     def show_rating_screen(self) -> None:
+        """Comfort rating using the same slide-and-lift buttons as the trials"""
         self.root_screen.clear_widgets()
-        question = "How comfortable was this level?"
-        box = BoxLayout(orientation="vertical", padding=40, spacing=15)
-        box.add_widget(Label(
-            text=f"Level {self.level} complete\n\n{question}\n"
+        self.rating_question = "How comfortable was this level? 1 is very uncomfortable, 5 is very comfortable."
+        screen = HapticScreen()
+        screen.add_widget(Label(
+            text=f"Level {self.level} complete\n\nHow comfortable was this level?\n"
                  "1 = very uncomfortable   5 = very comfortable",
-            halign="center", font_size="20sp"))
-        row = BoxLayout(spacing=10)
+            halign="center", font_size="20sp",
+            size_hint=(1, 0.4), pos_hint={"center_x": 0.5, "top": 1}))
         for rating in range(1, 6):
-            btn = Button(text=str(rating), font_size="28sp")
-            btn.bind(on_release=lambda _b, r=rating: self.submit_rating(r))
-            row.add_widget(btn)
-        box.add_widget(row)
-        self.root_screen.add_widget(box)
-        self.coreVibrationAudio.playAudio(
-            f"Level {self.level} complete. {question} Pick a number from 1 to 5.")
+            group = ButtonGroup(size_hint=(0.17, 0.3),
+                                pos_hint={"center_x": 0.1 + 0.2 * (rating - 1), "center_y": 0.35})
+            group.add_button(Button(text=str(rating), font_size="32sp"))
+            group.rating = rating
+            screen.add_group(group)
+        screen.bind(on_enter_group=self.on_rating_enter,
+                    on_leave_group=self.on_leave_group,
+                    on_select=self.on_rating_select)
+        self.rating_active = True
+        self.root_screen.add_widget(screen)
+        self.coreVibrationAudio.playAudio(f"Level {self.level} complete. {self.rating_question}")
+
+    def on_rating_enter(self, _screen, group: ButtonGroup) -> None:
+        if not self.rating_active:
+            return
+        if exp.RATING_SCREEN_VIBRATES:
+            self.coreVibrationAudio.activateVibration()
+        self.coreVibrationAudio.playAudio(group.button.text)
+
+    def on_rating_select(self, _screen, group) -> None:
+        if not self.rating_active:
+            return
+        if group is None:
+            self.coreVibrationAudio.playAudio(self.rating_question)
+            return
+        self.rating_active = False
+        self.coreVibrationAudio.deactivateVibration()
+        self.coreVibrationAudio.playAudio(f"You chose {group.rating}")
+        self.submit_rating(group.rating)
 
     def show_end_screen(self) -> None:
         self.root_screen.clear_widgets()
@@ -155,7 +179,7 @@ class MyApp(App):
 
     def submit_rating(self, rating: int) -> None:
         self.logger.log_rating(self.level, rating)
-        self.start_next_level()
+        Clock.schedule_once(lambda _dt: self.start_next_level(), exp.PAUSE_BETWEEN_TRIALS_S)
 
     # ================= Touch events from HapticScreen =================
     def on_touch_start(self, _screen) -> None:
