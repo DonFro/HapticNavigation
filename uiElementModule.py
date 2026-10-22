@@ -51,7 +51,7 @@ class ButtonGroup(BoxLayout):
     def on_touch_up(self, touch: MotionEvent) -> bool:
         """Checks if a button is covered by a finger press"""
         if self.on_button:
-            self.on_button = False
+            self.finger_on_button = False
             self.button.state = "normal"
 
             self.button.dispatch("on_release")
