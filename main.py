@@ -57,7 +57,7 @@ class MyApp(App):
         box.add_widget(row)
         self.root_screen.add_widget(box)
         self.coreVibrationAudio.playAudio(
-            f"Level {self.level} complete. {question} Say a number from 1 to 5.")
+            f"Level {self.level} complete. {question} Pick a number from 1 to 5.")
 
     def show_end_screen(self) -> None:
         self.root_screen.clear_widgets()

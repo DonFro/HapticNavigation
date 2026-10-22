@@ -3,7 +3,7 @@ import os
 import random
 import time
 
-# ---------------- Experiment settings (edit these) ----------------
+# ---------------- Experiment settings (Can be edited) ----------------
 BUTTON_LABELS = ["Purchase", "Add to Cart", "Wishlist", "Back"]
 NUM_LEVELS = 4              # level N shows N buttons
 TRIALS_PER_LEVEL = 4        # how many "find the button" tasks per level
