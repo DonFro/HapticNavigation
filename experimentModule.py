@@ -12,9 +12,57 @@ TRIAL_TIMEOUT_S = 60
 PAUSE_BETWEEN_TRIALS_S = 1.5
 RATING_SCREEN_VIBRATES = True
 
-# 2x2 grid of slots (center_x, center_y)
-SLOTS = [(0.28, 0.68), (0.72, 0.68), (0.28, 0.32), (0.72, 0.32)]
-BUTTON_SIZE = (0.40, 0.25)
+# Vibration intensity for each button (0.0 = off, 1.0 = strongest).
+# Each button keeps its own intensity every trial, so participants can learn
+# to tell buttons apart by feel.
+BUTTON_INTENSITY = {
+    "Purchase": 1.0,
+    "Add to Cart": 0.7,
+    "Wishlist": 0.45,
+    "Back": 0.25,
+}
+RATING_INTENSITY = 1.0
+
+# Random button sizes, as fractions of screen width / height.
+# The minimums keep every button comfortably touchable.
+BUTTON_WIDTH_RANGE = (0.20, 0.45)
+BUTTON_HEIGHT_RANGE = (0.08, 0.22)
+SCREEN_MARGIN = 0.03   # keep buttons this far from the screen edges
+BUTTON_GAP = 0.03      # minimum space between two buttons
+
+
+def _overlaps(a: dict, b: dict, gap: float) -> bool:
+    """True if two buttons (center x/y, width w, height h) overlap or are too close."""
+    return (abs(a["x"] - b["x"]) < (a["w"] + b["w"]) / 2 + gap and
+            abs(a["y"] - b["y"]) < (a["h"] + b["h"]) / 2 + gap)
+
+
+def random_layout(labels: list) -> dict:
+    """Places each button at a random spot with a random size, without overlaps.
+
+    Returns {label: {"x", "y", "w", "h"}} where x/y is the button center and
+    every value is a fraction of the screen (0-1).
+    """
+    for _attempt in range(200):
+        placed = {}
+        for label in labels:
+            for _try in range(300):
+                w = random.uniform(*BUTTON_WIDTH_RANGE)
+                h = random.uniform(*BUTTON_HEIGHT_RANGE)
+                box = {
+                    "x": random.uniform(SCREEN_MARGIN + w / 2, 1 - SCREEN_MARGIN - w / 2),
+                    "y": random.uniform(SCREEN_MARGIN + h / 2, 1 - SCREEN_MARGIN - h / 2),
+                    "w": w,
+                    "h": h,
+                }
+                if not any(_overlaps(box, other, BUTTON_GAP) for other in placed.values()):
+                    placed[label] = {k: round(v, 3) for k, v in box.items()}
+                    break
+            else:
+                break  # couldn't fit this button; start the layout over
+        if len(placed) == len(labels):
+            return placed
+    raise RuntimeError("Could not fit buttons; lower BUTTON_WIDTH_RANGE / BUTTON_HEIGHT_RANGE")
 
 
 def build_level_trials(level: int) -> list:
@@ -28,13 +76,12 @@ def build_level_trials(level: int) -> list:
         targets.extend(batch)
     targets = targets[:TRIALS_PER_LEVEL]
 
-    # assign random button layouts for each trial
+    # new random positions and sizes for every trial
     trials = []
     for i, target in enumerate(targets, start=1):
-        slots = random.sample(range(len(SLOTS)), level)
-        layout = dict(zip(labels, slots))
-        trials.append({"level": level, "trial": i, "target": target, "layout": layout})
-        
+        trials.append({"level": level, "trial": i, "target": target,
+                       "layout": random_layout(labels)})
+
     return trials
 
 
@@ -44,7 +91,7 @@ class ResultLogger:
     # CSV column headers
     TRIAL_FIELDS = [
         "session_id", "condition", "level", "num_buttons", "trial", "target",
-        "target_slot", "completed", "time_from_prompt_s", "time_from_first_touch_s",
+        "target_x", "target_y", "target_w", "target_h", "target_intensity", "completed", "time_from_prompt_s", "time_from_first_touch_s",
         "wrong_selections", "empty_lifts", "buttons_entered", "timestamp",
     ]
     RATING_FIELDS = ["session_id", "condition", "level", "comfort_rating", "timestamp"]
@@ -63,6 +110,14 @@ class ResultLogger:
 
     def _append(self, path: str, fields: list, row: dict) -> None:
         """Writes a row to a CSV file."""
+        # if an older file has different columns, keep it under a new name
+        if os.path.exists(path):
+            with open(path, newline="") as f:
+                header = next(csv.reader(f), [])
+            if header != fields:
+                stem, ext = os.path.splitext(path)
+                os.rename(path, f"{stem}_old_{time.strftime('%Y%m%d-%H%M%S')}{ext}")
+
         # write row and add header if file is new
         new_file = not os.path.exists(path)
         with open(path, "a", newline="") as f:
@@ -91,4 +146,4 @@ class ResultLogger:
                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")}
 
         # append to ratings csv
-        self._append(self.ratings_path, self.RATING_FIELDS, row)
+        self._append(self.ratings_path, self.RATING_FIELDS, row)

@@ -6,6 +6,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
+from kivy.metrics import sp
 
 # Imported modules
 import coreVibrationAudioModule as cva
@@ -93,7 +94,7 @@ class MyApp(App):
         
         # trigger haptic and audio feedback
         if exp.RATING_SCREEN_VIBRATES:
-            self.coreVibrationAudio.activateVibration()
+            self.coreVibrationAudio.activateVibration(exp.RATING_INTENSITY)
         self.coreVibrationAudio.playAudio(group.button.text)
 
     def on_rating_select(self, _screen, group) -> None:
@@ -177,12 +178,14 @@ class MyApp(App):
         self.trial = self.trials[self.trial_index]
         self.haptic_screen.clear_groups()
 
-        # render target buttons
-        for label, slot in self.trial["layout"].items():
-            cx, cy = exp.SLOTS[slot]
-            group = ButtonGroup(size_hint=exp.BUTTON_SIZE,
-                                pos_hint={"center_x": cx, "center_y": cy})
-            group.add_button(Button(text=label, font_size="22sp"))
+        # render buttons at random positions and sizes
+        for label, box in self.trial["layout"].items():
+            group = ButtonGroup(size_hint=(box["w"], box["h"]),
+                                pos_hint={"center_x": box["x"], "center_y": box["y"]})
+            button = Button(text=label, halign="center", valign="middle")
+            button.bind(size=self._fit_button_text)
+            group.add_button(button)
+            group.intensity = exp.BUTTON_INTENSITY.get(label, 1.0)
             self.haptic_screen.add_group(group)
 
         # initialize counters
@@ -198,6 +201,13 @@ class MyApp(App):
         prefix = f"Level {self.level}. " if announce_level else ""
         self.coreVibrationAudio.playAudio(f"{prefix}Find {self.trial['target']}")
 
+    @staticmethod
+    def _fit_button_text(button: Button, size) -> None:
+        """Wraps the label and shrinks the font so whole words fit small buttons."""
+        button.text_size = size
+        longest_word = max(len(word) for word in button.text.split())
+        button.font_size = min(sp(20), 0.9 * size[0] / (0.6 * longest_word))
+
     def finish_trial(self, completed: bool) -> None:
         """Logs performance metrics and transitions out of the current trial."""
         # stop active tracking
@@ -210,12 +220,17 @@ class MyApp(App):
         from_touch = "" if self.first_touch_time is None else round(now - self.first_touch_time, 3)
 
         # log metrics
+        target_box = self.trial["layout"][self.trial["target"]]
         self.logger.log_trial({
             "level": self.level,
             "num_buttons": self.level,
             "trial": self.trial["trial"],
             "target": self.trial["target"],
-            "target_slot": self.trial["layout"][self.trial["target"]],
+            "target_x": target_box["x"],
+            "target_y": target_box["y"],
+            "target_w": target_box["w"],
+            "target_h": target_box["h"],
+            "target_intensity": exp.BUTTON_INTENSITY.get(self.trial["target"], 1.0),
             "completed": completed,
             "time_from_prompt_s": round(now - self.prompt_time, 3),
             "time_from_first_touch_s": from_touch,
@@ -260,7 +275,7 @@ class MyApp(App):
         # trigger feedback
         self.buttons_entered += 1
         if self.condition == "haptic_audio":
-            self.coreVibrationAudio.activateVibration()
+            self.coreVibrationAudio.activateVibration(group.intensity)
         self.coreVibrationAudio.playAudio(group.button.text)
 
     def on_leave_group(self, _screen, group: ButtonGroup) -> None:
@@ -292,4 +307,4 @@ class MyApp(App):
 
 # Execution entry point
 if __name__ == "__main__":
-    MyApp().run()
+    MyApp().run()

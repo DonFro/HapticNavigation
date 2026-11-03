@@ -19,8 +19,14 @@ and speaks its name. Lifting the finger on a button selects it.
 | 4     | Purchase, Add to Cart, Wishlist, Back     |
 
 - 4 trials per level (16 per session); targets spread evenly over the level's buttons
-- Buttons are placed in random cells of a 2x2 grid every trial, so positions can't be memorised
-- Button size is the same at every level, so only the number of buttons changes
+- Every trial, each button gets a random position anywhere on the screen and a
+  random size (20-45% of screen width, 8-22% of screen height), without overlapping,
+  so positions can't be memorised
+- Each button has its own vibration intensity (Purchase 1.0, Add to Cart 0.7,
+  Wishlist 0.45, Back 0.25), so buttons can be told apart by feel.
+  Rating buttons use 1.0. Settings are at the top of experimentModule.py
+- Phones with amplitude control vibrate at that strength; phones without it
+  use rapid on/off pulses, where lower intensity = shorter pulses
 
 ## Conditions
 - Haptic + Audio: vibration + speech on entering a button
@@ -36,6 +42,9 @@ Quantitative (trials.csv)
   time_from_prompt_s also includes the time spent listening to the prompt.
 - Error rate: wrong_selections / (wrong_selections + correct selections), per level
 - Also logged: completed, empty_lifts, buttons_entered (how much exploring was needed)
+- Target position, size and intensity per trial: target_x, target_y (center),
+  target_w, target_h (fractions of the screen) and target_intensity, so you can
+  check whether smaller or weaker-vibrating targets take longer
 
 Qualitative (ratings.csv)
 - Comfort rating 1-5 after every level (participant says it, facilitator taps it)

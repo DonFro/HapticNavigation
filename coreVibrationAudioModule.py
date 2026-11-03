@@ -4,9 +4,14 @@ from plyer import vibrator, tts as plyer_tts
 
 # Android TTS configuration
 if platform == "android":
-    from jnius import autoclass, PythonJavaClass, java_method
+    from jnius import autoclass, cast, PythonJavaClass, java_method
 
     PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    Context = autoclass("android.content.Context")
+    try:
+        VibrationEffect = autoclass("android.os.VibrationEffect")  # Android 8+
+    except Exception:
+        VibrationEffect = None
     TextToSpeech = autoclass("android.speech.tts.TextToSpeech")
     Locale = autoclass("java.util.Locale")
 
@@ -36,6 +41,18 @@ class CoreVibrationAudioModule:
         self.isActive = False
         self.ttsReady = False
         self.engine = None
+        self.androidVibrator = None
+        self.hasAmplitudeControl = False
+
+        # setup android vibrator (needed for vibration intensity)
+        if platform == "android" and VibrationEffect is not None:
+            try:
+                service = PythonActivity.mActivity.getSystemService(Context.VIBRATOR_SERVICE)
+                self.androidVibrator = cast("android.os.Vibrator", service)
+                self.hasAmplitudeControl = bool(self.androidVibrator.hasAmplitudeControl())
+                print(f"Vibrator ready, amplitude control: {self.hasAmplitudeControl}")
+            except Exception as e:
+                print(f"Android vibrator setup failed, using plyer: {e}")
 
         # setup android tts engine
         if platform == "android":
@@ -57,17 +74,26 @@ class CoreVibrationAudioModule:
         else:
             print(f"TTS init failed ({status}), using plyer")
 
-    def activateVibration(self) -> None:
-        """Activates continuous vibration until explicitly cancelled."""
+    def activateVibration(self, intensity: float = 1.0) -> None:
+        """Vibrates continuously at the given intensity (0.0-1.0) until cancelled."""
         self.isActive = True
-        
-        # start continuous vibration loop
+        intensity = max(0.0, min(1.0, intensity))
+        if intensity == 0:
+            return
+
+        # android: real intensity control
+        if self.androidVibrator is not None:
+            try:
+                self.androidVibrator.vibrate(self._continuous_effect(intensity))
+                return
+            except Exception as e:
+                print(f"Intensity vibration failed, using plyer: {e}")
+
+        # fallback: plyer continuous vibration (full strength only)
         try:
             self.vibrator.pattern(pattern=[0, 1], repeat=0)
         except NotImplementedError:
-            print("[PC Test] Vibration ON")
-            
-        # fallback to single long pulse
+            print(f"[PC Test] Vibration ON (intensity {intensity})")
         except Exception as e:
             print(f"Continuous vibration failed, using long pulse: {e}")
             try:
@@ -75,13 +101,33 @@ class CoreVibrationAudioModule:
             except Exception as e2:
                 print(f"Vibration failed: {e2}")
 
+    def _continuous_effect(self, intensity: float):
+        """Builds a looping Android VibrationEffect for an intensity.
+
+        Phones with amplitude control get a steady vibration at that strength
+        (1-255). Phones without it get rapid on/off pulses instead: a lower
+        intensity means shorter "on" time, which feels weaker.
+        """
+        if self.hasAmplitudeControl:
+            amplitude = max(1, int(round(intensity * 255)))
+            return VibrationEffect.createWaveform([0, 1000], [0, amplitude], 0)
+
+        if intensity >= 0.95:
+            return VibrationEffect.createWaveform([0, 1000], 0)
+        period_ms = 100
+        on_ms = max(10, int(period_ms * intensity))
+        return VibrationEffect.createWaveform([0, on_ms, period_ms - on_ms], 1)
+
     def deactivateVibration(self) -> None:
         """Stops any active device vibration."""
         self.isActive = False
         
         # cancel active vibration
         try:
-            self.vibrator.cancel()
+            if self.androidVibrator is not None:
+                self.androidVibrator.cancel()
+            else:
+                self.vibrator.cancel()
         except NotImplementedError:
             print("[PC Test] Vibration OFF")
         except Exception as e:
@@ -100,4 +146,4 @@ class CoreVibrationAudioModule:
         except NotImplementedError:
             print(f"[PC Test] Playing Audio: '{text}'")
         except Exception as e:
-            print(f"TTS speak failed: {e}")
+            print(f"TTS speak failed: {e}")
