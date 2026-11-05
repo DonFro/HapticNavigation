@@ -1,0 +1,387 @@
+"""Statistical analysis for the Haptic Navigation user study.
+
+Usage (run on your PC, in the project folder):
+    py -m pip install pandas scipy statsmodels matplotlib
+    py analyze_study.py trials.csv ratings.csv participants.csv
+
+participants.csv links each app session to a participant. One row per session:
+    participant_id,session_id,order
+    P01,20261110-140512,HA-first
+    P01,20261110-141530,HA-first
+    ...
+Sessions that are not listed (e.g. your own test runs) are ignored.
+
+Outputs go to the results/ folder:
+    summary.md                 descriptive tables + every test result + H0 decisions
+    descriptives_*.csv         the same tables as CSV (paste into Word/Excel)
+    per_participant.csv        one row per participant x condition x level
+    fig1..fig4 *.png           graphs for the report
+"""
+import io
+import os
+import sys
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy import stats
+from statsmodels.stats.anova import AnovaRM
+from statsmodels.stats.multitest import multipletests
+
+ALPHA = 0.05
+OUT = "results"
+COND_NAMES = {"haptic_audio": "Haptic + Audio", "audio_only": "Audio only"}
+COND_COLORS = {"haptic_audio": "#1f6f8b", "audio_only": "#e07a1f"}
+CONDS = ["haptic_audio", "audio_only"]
+
+
+# ---------------------------------------------------------------- loading
+def read_csv_any(path: str) -> pd.DataFrame:
+    """Reads a CSV saved as UTF-8 or UTF-16 (Windows PowerShell's `>` makes UTF-16)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    enc = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    return pd.read_csv(io.StringIO(data.decode(enc)))
+
+
+def load(trials_path, ratings_path, participants_path):
+    trials = read_csv_any(trials_path)
+    ratings = read_csv_any(ratings_path)
+    parts = read_csv_any(participants_path)
+    for df in (trials, ratings, parts):
+        df["session_id"] = df["session_id"].astype(str).str.strip()
+
+    known = set(parts["session_id"])
+    skipped = sorted(set(trials["session_id"]) - known)
+    if skipped:
+        print(f"Ignoring {len(skipped)} session(s) not in participants.csv: {', '.join(skipped)}")
+
+    keep = ["session_id", "participant_id"] + (["order"] if "order" in parts else [])
+    trials = trials.merge(parts[keep], on="session_id")
+    ratings = ratings.merge(parts[keep], on="session_id")
+    trials["completed"] = trials["completed"].astype(str).str.lower() == "true"
+    trials["time_s"] = pd.to_numeric(trials["time_from_first_touch_s"], errors="coerce")
+    trials["time_s"] = trials["time_s"].fillna(pd.to_numeric(trials["time_from_prompt_s"]))
+    return trials, ratings, parts
+
+
+def per_participant(trials, ratings) -> pd.DataFrame:
+    """One row per participant x condition x level (the unit for all tests)."""
+    rows = []
+    for (pid, cond, lvl), g in trials.groupby(["participant_id", "condition", "level"]):
+        done = g[g["completed"]]
+        wrong = g["wrong_selections"].sum()
+        picks = wrong + len(done)
+        rows.append({
+            "participant_id": pid, "condition": cond, "level": int(lvl),
+            "mean_time_s": done["time_s"].mean() if len(done) else np.nan,
+            "error_rate": wrong / picks if picks else 0.0,
+            "completion_rate": len(done) / len(g),
+            "empty_lifts": g["empty_lifts"].sum(),
+            "trials": len(g),
+        })
+    cells = pd.DataFrame(rows)
+    comfort = (ratings.groupby(["participant_id", "condition", "level"])["comfort_rating"]
+               .mean().reset_index())
+    cells = cells.merge(comfort, on=["participant_id", "condition", "level"], how="left")
+    cells["log_time"] = np.log(cells["mean_time_s"])
+    return cells
+
+
+def complete_participants(cells: pd.DataFrame, col: str) -> pd.DataFrame:
+    """Keeps participants with a value in every condition x level cell (needed for RM tests)."""
+    n_cells = cells.groupby("participant_id")[col].count()
+    full = n_cells[n_cells == len(CONDS) * cells["level"].nunique()].index
+    dropped = sorted(set(cells["participant_id"]) - set(full))
+    if dropped:
+        print(f"[{col}] dropping participants with missing cells: {', '.join(map(str, dropped))}")
+    return cells[cells["participant_id"].isin(full)]
+
+
+# ---------------------------------------------------------------- descriptives
+def describe(cells: pd.DataFrame, col: str) -> pd.DataFrame:
+    t = (cells.groupby(["condition", "level"])[col]
+         .agg(n="count", mean="mean", median="median", sd="std").reset_index())
+    t["condition"] = t["condition"].map(COND_NAMES)
+    return t.round(3)
+
+
+def describe_overall(cells: pd.DataFrame, col: str) -> pd.DataFrame:
+    p = cells.groupby(["participant_id", "condition"])[col].mean().reset_index()
+    t = p.groupby("condition")[col].agg(n="count", mean="mean", median="median", sd="std").reset_index()
+    t["condition"] = t["condition"].map(COND_NAMES)
+    return t.round(3)
+
+
+# ---------------------------------------------------------------- tests
+def fmt_p(p):
+    return "< .001" if p < 0.001 else f"= {p:.3f}"
+
+
+def wilcoxon_pair(a, b):
+    """Wilcoxon signed-rank on paired samples. Returns dict (or None if all differences are 0)."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if np.allclose(a - b, 0):
+        return None
+    res = stats.wilcoxon(a, b, zero_method="wilcox")
+    p = res.pvalue
+    z = stats.norm.isf(p / 2)
+    return {"W": res.statistic, "p": p, "r": z / np.sqrt(len(a)), "n": len(a),
+            "median_diff": float(np.median(a - b))}
+
+
+def rm_anova(cells: pd.DataFrame, col: str) -> list:
+    data = complete_participants(cells, col)
+    if data["participant_id"].nunique() < 2:
+        return []
+    res = AnovaRM(data, depvar=col, subject="participant_id",
+                  within=["condition", "level"]).fit().anova_table
+    out = []
+    for effect, r in res.iterrows():
+        F, d1, d2, p = r["F Value"], r["Num DF"], r["Den DF"], r["Pr > F"]
+        out.append({"effect": effect, "F": F, "df1": d1, "df2": d2, "p": p,
+                    "partial_eta_sq": F * d1 / (F * d1 + d2)})
+    return out
+
+
+def paired_by_level(cells, col):
+    """Haptic vs audio at every level, Wilcoxon + Holm correction."""
+    rows = []
+    for lvl, g in cells.groupby("level"):
+        w = g.pivot(index="participant_id", columns="condition", values=col).dropna()
+        if len(w) < 2 or not all(c in w for c in CONDS):
+            continue
+        r = wilcoxon_pair(w["haptic_audio"], w["audio_only"])
+        rows.append({"level": lvl, **(r or {"W": np.nan, "p": 1.0, "r": 0.0, "n": len(w),
+                                             "median_diff": 0.0})})
+    if rows:
+        adj = multipletests([r["p"] for r in rows], method="holm")[1]
+        for r, pa in zip(rows, adj):
+            r["p_holm"] = pa
+    return rows
+
+
+def friedman_levels(cells, col, cond):
+    w = (cells[cells["condition"] == cond]
+         .pivot(index="participant_id", columns="level", values=col).dropna())
+    if len(w) < 2 or w.shape[1] < 3:
+        return None
+    if np.allclose(w.values, w.values[0, 0]):
+        return None
+    chi, p = stats.friedmanchisquare(*[w[c] for c in w.columns])
+    return {"chi2": chi, "df": w.shape[1] - 1, "p": p, "n": len(w),
+            "kendall_w": chi / (len(w) * (w.shape[1] - 1))}
+
+
+def overall_pair(cells, col):
+    p = cells.groupby(["participant_id", "condition"])[col].mean().unstack().dropna()
+    if not all(c in p for c in CONDS):
+        return None, None
+    diff = p["haptic_audio"] - p["audio_only"]
+    shapiro = stats.shapiro(diff) if len(diff) >= 3 and diff.std() > 0 else None
+    return wilcoxon_pair(p["haptic_audio"], p["audio_only"]), shapiro
+
+
+# ---------------------------------------------------------------- figures
+def line_by_level(cells, col, ylabel, fname, title, ylim=None):
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    for i, cond in enumerate(CONDS):
+        g = cells[cells["condition"] == cond].groupby("level")[col]
+        m, se = g.mean(), g.sem()
+        x = m.index + (i - 0.5) * 0.08
+        ax.errorbar(x, m.values, yerr=se.values, marker="o", capsize=4, lw=2,
+                    color=COND_COLORS[cond], label=COND_NAMES[cond])
+    ax.set_xticks(sorted(cells["level"].unique()))
+    ax.set_xlabel("Level (number of buttons on screen)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    if ylim:
+        ax.set_ylim(*ylim)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(frameon=False)
+    ax.text(0.99, 0.01, "Points = mean, bars = ±1 SE", transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=8, color="#555")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, fname), dpi=200)
+    plt.close(fig)
+
+
+def bars_by_level(cells, col, ylabel, fname, title, ylim=None):
+    levels = sorted(cells["level"].unique())
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    width = 0.38
+    for i, cond in enumerate(CONDS):
+        g = cells[cells["condition"] == cond].groupby("level")[col]
+        m, se = g.mean().reindex(levels), g.sem().reindex(levels)
+        ax.bar(np.array(levels) + (i - 0.5) * width, m.values, width, yerr=se.values,
+               capsize=4, color=COND_COLORS[cond], label=COND_NAMES[cond])
+    ax.set_xticks(levels)
+    ax.set_xlabel("Level (number of buttons on screen)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    if ylim:
+        ax.set_ylim(*ylim)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, fname), dpi=200)
+    plt.close(fig)
+
+
+def scatter_size(trials, fname):
+    d = trials[trials["completed"]].copy()
+    d["area_pct"] = d["target_w"] * d["target_h"] * 100
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    for cond in CONDS:
+        g = d[d["condition"] == cond]
+        ax.scatter(g["area_pct"], g["time_s"], s=18, alpha=0.6,
+                   color=COND_COLORS[cond], label=COND_NAMES[cond])
+    ax.set_xlabel("Target button area (% of screen)")
+    ax.set_ylabel("Time to complete task (s)")
+    ax.set_title("Target size vs. completion time (exploratory)")
+    ax.grid(alpha=0.3)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, fname), dpi=200)
+    plt.close(fig)
+    rho, p = stats.spearmanr(d["area_pct"], d["time_s"]) if len(d) > 2 else (np.nan, np.nan)
+    rho_i, p_i = (stats.spearmanr(d["target_intensity"], d["time_s"])
+                  if len(d) > 2 and d["target_intensity"].nunique() > 1 else (np.nan, np.nan))
+    return rho, p, rho_i, p_i
+
+
+# ---------------------------------------------------------------- report
+def md_table(df: pd.DataFrame) -> str:
+    cols = list(df.columns)
+    lines = ["| " + " | ".join(map(str, cols)) + " |", "|" + "---|" * len(cols)]
+    for _, r in df.iterrows():
+        lines.append("| " + " | ".join(str(r[c]) for c in cols) + " |")
+    return "\n".join(lines)
+
+
+def decision(p):
+    return "**reject H0**" if p < ALPHA else "fail to reject H0"
+
+
+def main():
+    trials_path = sys.argv[1] if len(sys.argv) > 1 else "trials.csv"
+    ratings_path = sys.argv[2] if len(sys.argv) > 2 else "ratings.csv"
+    parts_path = sys.argv[3] if len(sys.argv) > 3 else "participants.csv"
+    os.makedirs(OUT, exist_ok=True)
+
+    trials, ratings, parts = load(trials_path, ratings_path, parts_path)
+    cells = per_participant(trials, ratings)
+    cells.round(4).to_csv(os.path.join(OUT, "per_participant.csv"), index=False)
+    n = cells["participant_id"].nunique()
+
+    md = [f"# Haptic Navigation Study – Results\n",
+          f"Participants analysed: **{n}**  |  Trials: **{len(trials)}**  |  alpha = {ALPHA}\n",
+          "All tests use per-participant means (one value per participant per condition x level).\n"]
+
+    # descriptive tables
+    metrics = [("mean_time_s", "Time to complete task (s)"),
+               ("error_rate", "Error rate (wrong picks / all picks)"),
+               ("comfort_rating", "Comfort rating (1-5)"),
+               ("completion_rate", "Completion rate")]
+    md.append("## Descriptive statistics\n")
+    for col, name in metrics:
+        t = describe(cells, col)
+        t.to_csv(os.path.join(OUT, f"descriptives_{col}.csv"), index=False)
+        o = describe_overall(cells, col)
+        md += [f"### {name}\n", "By condition and level:\n", md_table(t), "",
+               "Overall (participant mean across levels):\n", md_table(o), ""]
+
+    # H1 time
+    md.append("## Inferential statistics\n")
+    md.append("### H1 – Time to complete task (2 x 4 repeated-measures ANOVA on log time)\n")
+    md.append("Time is log-transformed because completion times are right-skewed.\n")
+    anova = rm_anova(cells, "log_time")
+    if anova:
+        tbl = pd.DataFrame([{"Effect": a["effect"], "F": round(a["F"], 3),
+                             "df": f"{a['df1']:.0f}, {a['df2']:.0f}", "p": fmt_p(a["p"]),
+                             "partial eta²": round(a["partial_eta_sq"], 3),
+                             "Decision": decision(a["p"])} for a in anova])
+        md += [md_table(tbl), ""]
+    w, sh = overall_pair(cells, "log_time")
+    if sh is not None:
+        md.append(f"Shapiro-Wilk on paired differences (haptic - audio, log time): "
+                  f"W = {sh.statistic:.3f}, p {fmt_p(sh.pvalue)} "
+                  f"({'normality OK' if sh.pvalue >= ALPHA else 'not normal → rely on the Wilcoxon result'}).\n")
+    if w:
+        md.append(f"Wilcoxon signed-rank, overall time (non-parametric check): W = {w['W']:.1f}, "
+                  f"p {fmt_p(w['p'])}, r = {w['r']:.2f}, n = {w['n']} → {decision(w['p'])}.\n")
+    md += _paired_level_table(cells, "mean_time_s", "Time")
+
+    # H2 errors
+    md.append("### H2 – Error rate (non-parametric: error rates are bounded and usually not normal)\n")
+    w, _ = overall_pair(cells, "error_rate")
+    md.append(_wilcoxon_line("Overall error rate, haptic vs audio", w))
+    md += _paired_level_table(cells, "error_rate", "Error rate")
+    md += _friedman_lines(cells, "error_rate")
+
+    # H3 comfort
+    md.append("### H3 – Comfort rating (non-parametric: ordinal Likert data)\n")
+    w, _ = overall_pair(cells, "comfort_rating")
+    md.append(_wilcoxon_line("Overall comfort, haptic vs audio", w))
+    md += _paired_level_table(cells, "comfort_rating", "Comfort")
+    md += _friedman_lines(cells, "comfort_rating")
+
+    # figures
+    line_by_level(cells, "mean_time_s", "Time to complete task (s)",
+                  "fig1_time_by_level.png", "Completion time by level and condition")
+    bars_by_level(cells, "error_rate", "Error rate", "fig2_error_rate_by_level.png",
+                  "Error rate by level and condition", ylim=(0, None))
+    bars_by_level(cells, "comfort_rating", "Mean comfort rating (1-5)",
+                  "fig3_comfort_by_level.png", "Comfort by level and condition", ylim=(0, 5.5))
+    rho, p, rho_i, p_i = scatter_size(trials, "fig4_time_vs_target_size.png")
+
+    md.append("### Exploratory – target size and vibration intensity\n")
+    md.append(f"Spearman correlation, target area vs time: rho = {rho:.2f}, p {fmt_p(p)}.\n")
+    if not np.isnan(rho_i):
+        md.append(f"Spearman correlation, target vibration intensity vs time: "
+                  f"rho = {rho_i:.2f}, p {fmt_p(p_i)}.\n")
+    md += ["## Figures\n",
+           "![Completion time](fig1_time_by_level.png)\n",
+           "![Error rate](fig2_error_rate_by_level.png)\n",
+           "![Comfort](fig3_comfort_by_level.png)\n",
+           "![Target size vs time](fig4_time_vs_target_size.png)\n"]
+
+    with open(os.path.join(OUT, "summary.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(md))
+    print(f"Done. Open {OUT}/summary.md and the figures in {OUT}/")
+
+
+def _wilcoxon_line(label, w):
+    if w is None:
+        return f"{label}: no differences between conditions (all paired differences are 0); test not applicable.\n"
+    return (f"{label}: Wilcoxon W = {w['W']:.1f}, p {fmt_p(w['p'])}, r = {w['r']:.2f}, "
+            f"n = {w['n']}, median difference = {w['median_diff']:.3f} → {decision(w['p'])}.\n")
+
+
+def _paired_level_table(cells, col, name):
+    rows = paired_by_level(cells, col)
+    if not rows:
+        return []
+    t = pd.DataFrame([{"Level": r["level"], "n": r["n"],
+                       "Median diff (H+A - A)": round(r["median_diff"], 3),
+                       "W": "-" if np.isnan(r["W"]) else round(r["W"], 1),
+                       "p (Holm)": fmt_p(r["p_holm"]), "r": round(r["r"], 2)} for r in rows])
+    return [f"{name}, haptic vs audio at each level (Wilcoxon, Holm-corrected):\n", md_table(t), ""]
+
+
+def _friedman_lines(cells, col):
+    out = []
+    for cond in CONDS:
+        f = friedman_levels(cells, col, cond)
+        if f is None:
+            out.append(f"Friedman across levels ({COND_NAMES[cond]}): no variation; not applicable.\n")
+        else:
+            out.append(f"Friedman across levels ({COND_NAMES[cond]}): chi²({f['df']}) = {f['chi2']:.2f}, "
+                       f"p {fmt_p(f['p'])}, Kendall's W = {f['kendall_w']:.2f} → {decision(f['p'])}.\n")
+    return out
+
+
+if __name__ == "__main__":
+    main()

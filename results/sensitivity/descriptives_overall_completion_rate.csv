@@ -1,0 +1,3 @@
+condition,n,mean,median,sd
+Audio only,9,1.0,1.0,0.0
+Haptic + Audio,9,0.993,1.0,0.021

@@ -67,6 +67,12 @@ adb.exe shell run-as <package.domain>.<package.name> cat files/trials.csv > tria
 adb.exe shell run-as <package.domain>.<package.name> cat files/ratings.csv > ratings.csv
 python analyze.py trials.csv ratings.csv
 ```
+```bash
+.\adb.exe exec-out run-as org.test.myapp cat files/trials.csv > "C:\Users\ayden\OneDrive\Documents\HCI_Project\HapticNavigation\trials.csv"
+.\adb.exe exec-out run-as org.test.myapp cat files/ratings.csv > "C:\Users\ayden\OneDrive\Documents\HCI_Project\HapticNavigation\ratings.csv"
+python analyze.py trials.csv ratings.csv
+```
+
 Backup: every row is also printed to the log as a line starting with RESULT,
 ```bash
 adb.exe logcat -d -s python | grep RESULT

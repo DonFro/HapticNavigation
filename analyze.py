@@ -1,5 +1,6 @@
 # Imported libraries
 import csv
+import io
 import statistics
 import sys
 from collections import defaultdict
@@ -8,16 +9,31 @@ from collections import defaultdict
 trials_path = sys.argv[1] if len(sys.argv) > 1 else "trials.csv"
 ratings_path = sys.argv[2] if len(sys.argv) > 2 else "ratings.csv"
 
+
+def open_csv(path: str) -> io.StringIO:
+    """Opens a CSV saved as UTF-8 or UTF-16.
+
+    Windows PowerShell's `>` saves files as UTF-16, which plain open() can't read.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = data.decode("utf-16")
+    else:
+        text = data.decode("utf-8-sig")
+    return io.StringIO(text, newline="")
+
+
 # Load trial data
 groups = defaultdict(list)
-with open(trials_path, newline="") as f:
+with open_csv(trials_path) as f:
     for row in csv.DictReader(f):
         groups[(row["condition"], int(row["level"]))].append(row)
 
 # Load rating data
 ratings = defaultdict(list)
 try:
-    with open(ratings_path, newline="") as f:
+    with open_csv(ratings_path) as f:
         for row in csv.DictReader(f):
             ratings[(row["condition"], int(row["level"]))].append(int(row["comfort_rating"]))
 except FileNotFoundError:
